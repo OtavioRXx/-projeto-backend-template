@@ -1,96 +1,162 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
+ 
 require('dotenv').config();
-
+ 
 const app = express();
+ 
 app.use(cors());
 app.use(express.json());
-
+ 
 const PORT = process.env.PORT || 4000;
-
-// Instancia o pool diretamente de forma síncrona
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-
-// Função para testar a conexão com o banco antes de subir o servidor
-async function startServer() {
+ 
+let pool = null;
+let dbConnected = false;
+ 
+async function initDb() {
+  pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 3306,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+  });
+ 
   try {
-    const connection = await pool.getConnection();
-    console.log('Conexão com o banco de dados estabelecida com sucesso!');
-    connection.release();
-
-    app.listen(PORT, () => {
-      console.log(`API rodando na porta ${PORT}`);
-    });
+    await pool.query('SELECT 1');
+ 
+    dbConnected = true;
+ 
+    console.log('Conexão com MySQL estabelecida');
   } catch (err) {
-    console.error('Erro ao conectar ao banco de dados:', err);
-    process.exit(1);
+    dbConnected = false;
+ 
+    console.error('MySQL indisponível:', err.message);
+    console.log('Servidor continuará funcionando em modo de teste.');
   }
 }
-
-// Listar todos os produtos
+ 
+// Rota de teste
+app.get('/', (req, res) => {
+  res.json({
+    message: 'API Projetofinal funcionando!',
+    database: dbConnected ? 'conectado' : 'indisponível'
+  });
+});
+ 
+// Status da API
+app.get('/api/status', (req, res) => {
+  res.json({
+    api: 'online',
+    database: dbConnected ? 'online' : 'offline'
+  });
+});
+ 
+// Listar produtos
 app.get('/api/products', async (req, res) => {
+  if (!dbConnected) {
+    return res.status(503).json({
+      error: 'Banco de dados indisponível'
+    });
+  }
+ 
   try {
-    const [rows] = await pool.query('SELECT * FROM products ORDER BY id DESC');
+    const [rows] = await pool.query(
+      'SELECT * FROM products ORDER BY id DESC'
+    );
+ 
     res.json(rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Erro ao listar produtos' });
+ 
+    res.status(500).json({
+      error: 'Erro ao listar produtos'
+    });
   }
 });
-
-// Inserir produto (body: { name, description, price })
+ 
+// Inserir produto
 app.post('/api/products', async (req, res) => {
-  const { name, description, price } = req.body;
-  if (!name || price === undefined) {
-    return res.status(400).json({ error: 'name e price são obrigatórios' });
+  if (!dbConnected) {
+    return res.status(503).json({
+      error: 'Banco de dados indisponível'
+    });
   }
+ 
+  const { name, description, price } = req.body;
+ 
+  if (!name || price === undefined) {
+    return res.status(400).json({
+      error: 'name e price são obrigatórios'
+    });
+  }
+ 
   try {
     const [result] = await pool.query(
       'INSERT INTO products (name, description, price) VALUES (?, ?, ?)',
       [name, description || null, price]
     );
-    const insertedId = result.insertId;
-    const [rows] = await pool.query('SELECT * FROM products WHERE id = ?', [insertedId]);
+ 
+    const [rows] = await pool.query(
+      'SELECT * FROM products WHERE id = ?',
+      [result.insertId]
+    );
+ 
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Erro ao inserir produto' });
+ 
+    res.status(500).json({
+      error: 'Erro ao inserir produto'
+    });
   }
 });
-
-// Consultar produto por id
+ 
+// Consultar produto por ID
 app.get('/api/products/:id', async (req, res) => {
-  const { id } = req.params;
+  if (!dbConnected) {
+    return res.status(503).json({
+      error: 'Banco de dados indisponível'
+    });
+  }
+ 
   try {
-    const [rows] = await pool.query('SELECT * FROM products WHERE id = ?', [id]);
+    const [rows] = await pool.query(
+      'SELECT * FROM products WHERE id = ?',
+      [req.params.id]
+    );
+ 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Produto não encontrado' });
+      return res.status(404).json({
+        error: 'Produto não encontrado'
+      });
     }
+ 
     res.json(rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Erro ao consultar produto' });
+ 
+    res.status(500).json({
+      error: 'Erro ao consultar produto'
+    });
   }
 });
-
-// Tratamento de erros globais
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+ 
+// Inicia servidor mesmo sem banco
+initDb().finally(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`API rodando na porta ${PORT}`);
+  });
 });
-
+ 
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
+ 
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception thrown:', err);
+  console.error('Uncaught Exception:', err);
 });
-
-// Inicia a aplicação
-startServer();
